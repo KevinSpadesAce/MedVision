@@ -1,36 +1,483 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>MedVision MVP</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
 
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #f5f7fb;
+      color: #111827;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    h1 {
+      margin-bottom: 8px;
+    }
+
+    .subtitle {
+      color: #4b5563;
+      margin-bottom: 24px;
+    }
+
+    .card {
+      background: white;
+      border-radius: 14px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+    }
+
+    .section-title {
+      margin-top: 0;
+      margin-bottom: 16px;
+      font-size: 20px;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    input[type="text"] {
+      padding: 10px 12px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      min-width: 320px;
+      font-size: 14px;
+    }
+
+    input[type="file"] {
+      font-size: 14px;
+    }
+
+    button {
+      border: none;
+      border-radius: 8px;
+      padding: 10px 16px;
+      font-size: 14px;
+      cursor: pointer;
+      background: #2563eb;
+      color: white;
+    }
+
+    button:hover {
+      background: #1d4ed8;
+    }
+
+    button:disabled {
+      background: #94a3b8;
+      cursor: not-allowed;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1.1fr 1fr;
+      gap: 20px;
+    }
+
+    .image-box {
+      min-height: 420px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #f9fafb;
+      border: 1px solid #e5e7eb;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    .image-box img {
+      max-width: 100%;
+      max-height: 700px;
+      display: none;
+    }
+
+    .placeholder {
+      color: #6b7280;
+      font-size: 14px;
+      padding: 20px;
+      text-align: center;
+    }
+
+    .result-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .result-item {
+      background: #f9fafb;
+      border: 1px solid #e5e7eb;
+      border-radius: 10px;
+      padding: 12px;
+    }
+
+    .label {
+      font-size: 12px;
+      color: #6b7280;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .value {
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    .explanation-box,
+    .findings-box,
+    .debug-box {
+      background: #f9fafb;
+      border: 1px solid #e5e7eb;
+      border-radius: 10px;
+      padding: 14px;
+      margin-bottom: 14px;
+    }
+
+    .explanation-box p,
+    .findings-box p {
+      margin: 8px 0;
+      line-height: 1.5;
+    }
+
+    .status {
+      margin-top: 10px;
+      color: #374151;
+      min-height: 20px;
+    }
+
+    .disclaimer {
+      margin-top: 10px;
+      padding: 12px;
+      border-radius: 10px;
+      background: #fff7ed;
+      border: 1px solid #fdba74;
+      color: #9a3412;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .muted {
+      color: #6b7280;
+      font-size: 14px;
+    }
+
+    @media (max-width: 900px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .result-grid {
+        grid-template-columns: 1fr;
+      }
+
+      input[type="text"] {
+        min-width: 100%;
+      }
+    }
+  </style>
+</head>
 <body>
+  <div class="container">
+    <h1>MedVision MVP</h1>
+    <div class="subtitle">
+      AI-assisted preliminary chest imaging screening with annotated findings and clinician-facing explanation.
+    </div>
 
-<h2>MedVision AI Screening</h2>
+    <div class="card">
+      <h2 class="section-title">1. Load Real RSNA Demo Sample</h2>
 
-<input type="file" id="imageInput">
-<button onclick="upload()">Analyze</button>
+      <div class="controls">
+        <input
+          type="text"
+          id="patientIdInput"
+          value="00436515-870c-4b36-a041-de91049b9ab4"
+          placeholder="Enter RSNA patient ID"
+        />
+        <button id="loadDemoBtn" onclick="loadRsnaDemo()">Load RSNA Demo</button>
+      </div>
 
-<pre id="result"></pre>
+      <div class="muted">
+        Example positive patient ID:
+        <code>00436515-870c-4b36-a041-de91049b9ab4</code>
+      </div>
+    </div>
 
-<script>
+    <div class="card">
+      <h2 class="section-title">2. Upload Custom Image</h2>
 
-async function upload() {
+      <div class="controls">
+        <input type="file" id="imageInput" accept=".png,.jpg,.jpeg,.dcm" />
+        <button id="uploadBtn" onclick="uploadCustomImage()">Analyze Uploaded Image</button>
+      </div>
 
-    const file = document.getElementById("imageInput").files[0]
+      <div class="muted">
+        Supported file types: PNG, JPG, JPEG, DICOM (.dcm)
+      </div>
+    </div>
 
-    const formData = new FormData()
-    formData.append("image", file)
+    <div class="grid">
+      <div class="card">
+        <h2 class="section-title">Annotated Image</h2>
+        <div class="image-box">
+          <img id="annotatedImage" alt="Annotated result" />
+          <div class="placeholder" id="imagePlaceholder">
+            No annotated image yet. Load an RSNA sample or upload an image to begin.
+          </div>
+        </div>
+      </div>
 
-    const res = await fetch("http://127.0.0.1:8080/analyze-image", {
-        method: "POST",
-        body: formData
-    })
+      <div class="card">
+        <h2 class="section-title">Screening Result</h2>
 
-    const data = await res.json()
+        <div class="result-grid">
+          <div class="result-item">
+            <div class="label">Patient ID / Filename</div>
+            <div class="value" id="infoSource">-</div>
+          </div>
 
-    document.getElementById("result").innerText =
-        JSON.stringify(data, null, 2)
-}
+          <div class="result-item">
+            <div class="label">Abnormality</div>
+            <div class="value" id="abnormalityValue">-</div>
+          </div>
 
-</script>
+          <div class="result-item">
+            <div class="label">Risk Level</div>
+            <div class="value" id="riskLevelValue">-</div>
+          </div>
 
+          <div class="result-item">
+            <div class="label">Confidence</div>
+            <div class="value" id="confidenceValue">-</div>
+          </div>
+
+          <div class="result-item">
+            <div class="label">Clinician Review Required</div>
+            <div class="value" id="reviewValue">-</div>
+          </div>
+
+          <div class="result-item">
+            <div class="label">Model</div>
+            <div class="value" id="modelValue">-</div>
+          </div>
+        </div>
+
+        <div class="findings-box">
+          <strong>Localized Findings</strong>
+          <div id="findingsContainer" class="muted" style="margin-top: 8px;">
+            No findings yet.
+          </div>
+        </div>
+
+        <div class="explanation-box">
+          <strong>Explanation</strong>
+          <p id="explanationText">No explanation yet.</p>
+        </div>
+
+        <div class="disclaimer" id="disclaimerBox">
+          No disclaimer yet.
+        </div>
+
+        <div class="status" id="statusText"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 class="section-title">Debug JSON</h2>
+      <div class="debug-box">
+        <pre id="resultJson">No response yet.</pre>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = "http://127.0.0.1:8080";
+
+    function setStatus(message) {
+      document.getElementById("statusText").innerText = message;
+    }
+
+    function resetResultUI() {
+      document.getElementById("infoSource").innerText = "-";
+      document.getElementById("abnormalityValue").innerText = "-";
+      document.getElementById("riskLevelValue").innerText = "-";
+      document.getElementById("confidenceValue").innerText = "-";
+      document.getElementById("reviewValue").innerText = "-";
+      document.getElementById("modelValue").innerText = "-";
+      document.getElementById("findingsContainer").innerHTML = "No findings yet.";
+      document.getElementById("explanationText").innerText = "No explanation yet.";
+      document.getElementById("disclaimerBox").innerText = "No disclaimer yet.";
+      document.getElementById("resultJson").innerText = "No response yet.";
+
+      const annotatedImage = document.getElementById("annotatedImage");
+      const placeholder = document.getElementById("imagePlaceholder");
+      annotatedImage.style.display = "none";
+      annotatedImage.src = "";
+      placeholder.style.display = "block";
+    }
+
+    function renderFindings(findings) {
+      const container = document.getElementById("findingsContainer");
+
+      if (!findings || findings.length === 0) {
+        container.innerHTML = "No findings.";
+        return;
+      }
+
+      container.innerHTML = findings.map((f, index) => {
+        const bbox = Array.isArray(f.bbox) ? `[${f.bbox.join(", ")}]` : "-";
+        const confidence = typeof f.confidence === "number"
+          ? f.confidence.toFixed(2)
+          : f.confidence;
+
+        return `
+          <p>
+            <strong>Finding ${index + 1}</strong><br>
+            Label: ${f.label || "-"}<br>
+            Confidence: ${confidence}<br>
+            BBox: ${bbox}
+          </p>
+        `;
+      }).join("");
+    }
+
+    function populateUI(data) {
+      document.getElementById("resultJson").innerText = JSON.stringify(data, null, 2);
+
+      const result = data.result || {};
+
+      document.getElementById("infoSource").innerText =
+        data.patient_id || data.filename || "-";
+      document.getElementById("abnormalityValue").innerText =
+        result.abnormality || "-";
+      document.getElementById("riskLevelValue").innerText =
+        result.risk_level || "-";
+      document.getElementById("confidenceValue").innerText =
+        result.confidence !== undefined ? result.confidence : "-";
+      document.getElementById("reviewValue").innerText =
+        result.requires_clinician_review === true ? "Yes" :
+        result.requires_clinician_review === false ? "No" : "-";
+      document.getElementById("modelValue").innerText =
+        data.model_name || "-";
+      document.getElementById("explanationText").innerText =
+        result.explanation || "No explanation available.";
+      document.getElementById("disclaimerBox").innerText =
+        result.disclaimer || "No disclaimer available.";
+
+      renderFindings(data.findings || []);
+
+      if (data.annotated_image_url) {
+        const annotatedImage = document.getElementById("annotatedImage");
+        const placeholder = document.getElementById("imagePlaceholder");
+        annotatedImage.src = data.annotated_image_url + "?t=" + Date.now();
+        annotatedImage.style.display = "block";
+        placeholder.style.display = "none";
+      }
+    }
+
+    async function loadRsnaDemo() {
+      const patientId = document.getElementById("patientIdInput").value.trim();
+      const button = document.getElementById("loadDemoBtn");
+
+      if (!patientId) {
+        setStatus("Please enter a patient ID.");
+        return;
+      }
+
+      resetResultUI();
+      setStatus("Loading RSNA demo sample...");
+      button.disabled = true;
+
+      try {
+        const response = await fetch(`${API_BASE}/demo-rsna/${patientId}`);
+        const data = await response.json();
+
+        if (!response.ok || !data.success) {
+          document.getElementById("resultJson").innerText = JSON.stringify(data, null, 2);
+          setStatus("Failed to load RSNA demo sample.");
+          return;
+        }
+
+        populateUI(data);
+        setStatus("RSNA demo sample loaded successfully.");
+      } catch (error) {
+        document.getElementById("resultJson").innerText = JSON.stringify({
+          success: false,
+          error: String(error)
+        }, null, 2);
+        setStatus("Request failed.");
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function uploadCustomImage() {
+      const fileInput = document.getElementById("imageInput");
+      const file = fileInput.files[0];
+      const button = document.getElementById("uploadBtn");
+
+      if (!file) {
+        setStatus("Please choose a file first.");
+        return;
+      }
+
+      resetResultUI();
+      setStatus("Uploading and analyzing image...");
+      button.disabled = true;
+
+      const formData = new FormData();
+      formData.append("image", file);
+
+      try {
+        const response = await fetch(`${API_BASE}/analyze-image`, {
+          method: "POST",
+          body: formData
+        });
+
+        const data = await response.json();
+
+        if (!response.ok || !data.success) {
+          document.getElementById("resultJson").innerText = JSON.stringify(data, null, 2);
+          setStatus("Image analysis failed.");
+          return;
+        }
+
+        populateUI(data);
+        setStatus("Image analyzed successfully.");
+      } catch (error) {
+        document.getElementById("resultJson").innerText = JSON.stringify({
+          success: false,
+          error: String(error)
+        }, null, 2);
+        setStatus("Request failed.");
+      } finally {
+        button.disabled = false;
+      }
+    }
+  </script>
 </body>
 </html>

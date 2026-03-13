@@ -1,24 +1,39 @@
+import base64
 import io
 import json
 import os
-from typing import Tuple
+import uuid
+from pathlib import Path
 
 import numpy as np
 import pydicom
-from PIL import Image
+from PIL import Image, ImageDraw
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from google import genai
-
+import pandas as pd
 
 load_dotenv()
 
 PROJECT_ID = os.getenv("GCP_PROJECT_ID")
 REGION = os.getenv("GCP_REGION", "global")
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-3-flash-preview")
+RSNA_LABEL_CSV = r"E:/Documents/GitHub/MedVision/data/stage_2_train_labels.csv"
+RSNA_TRAIN_IMAGE_DIR = r"E:/Documents/GitHub/MedVision/data/stage_2_train_images"
+rsna_df = pd.read_csv(RSNA_LABEL_CSV)
+
+BASE_DIR = Path(__file__).resolve().parent
+UPLOAD_DIR = BASE_DIR / "uploads"
+ANNOTATED_DIR = BASE_DIR / "annotated"
+
+UPLOAD_DIR.mkdir(exist_ok=True)
+ANNOTATED_DIR.mkdir(exist_ok=True)
 
 ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".dcm"}
+
+app = Flask(__name__)
+CORS(app)
 
 
 class AppConfigError(Exception):
@@ -37,7 +52,7 @@ class AIAnalysisError(Exception):
     pass
 
 
-def validate_config() -> None:
+def validate_config():
     if not PROJECT_ID:
         raise AppConfigError("Missing GCP_PROJECT_ID in .env")
     if not REGION:
@@ -46,17 +61,26 @@ def validate_config() -> None:
         raise AppConfigError("Missing MODEL_NAME in .env")
 
 
-def get_file_extension(filename: str) -> str:
+def get_client():
+    validate_config()
+    return genai.Client(
+        vertexai=True,
+        project=PROJECT_ID,
+        location=REGION,
+    )
+
+
+def get_extension(filename: str) -> str:
     if not filename or "." not in filename:
-        raise FileValidationError("Uploaded file must have a valid filename and extension.")
+        raise FileValidationError("Invalid filename.")
     return os.path.splitext(filename)[1].lower()
 
 
 def validate_file(filename: str, file_bytes: bytes) -> str:
-    ext = get_file_extension(filename)
+    ext = get_extension(filename)
     if ext not in ALLOWED_EXTENSIONS:
         raise FileValidationError(
-            f"Unsupported file type: {ext}. Supported types: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
+            f"Unsupported file type: {ext}. Supported: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
         )
     if not file_bytes:
         raise FileValidationError("Uploaded file is empty.")
@@ -64,108 +88,155 @@ def validate_file(filename: str, file_bytes: bytes) -> str:
 
 
 def normalize_to_uint8(image: np.ndarray) -> np.ndarray:
-    if image is None or image.size == 0:
-        raise DicomProcessingError("DICOM image contains no pixel data.")
-
     image = image.astype(np.float32)
-
     min_val = float(np.min(image))
     max_val = float(np.max(image))
 
     if max_val == min_val:
-        raise DicomProcessingError("DICOM image has constant pixel values and cannot be normalized.")
+        raise DicomProcessingError("Image has constant pixel values.")
 
     image = (image - min_val) / (max_val - min_val)
     image = (image * 255).clip(0, 255).astype(np.uint8)
     return image
 
 
-def dicom_to_png_bytes(dicom_bytes: bytes) -> bytes:
+def dicom_to_pil(dicom_bytes: bytes) -> Image.Image:
     try:
         ds = pydicom.dcmread(io.BytesIO(dicom_bytes))
     except Exception as e:
-        raise DicomProcessingError(f"Failed to read DICOM file: {e}") from e
+        raise DicomProcessingError(f"Failed to read DICOM: {e}") from e
 
     if not hasattr(ds, "PixelData"):
-        raise DicomProcessingError("DICOM file does not contain PixelData.")
+        raise DicomProcessingError("DICOM file has no PixelData.")
 
     try:
         image = ds.pixel_array
     except Exception as e:
-        raise DicomProcessingError(f"Failed to extract pixel array from DICOM: {e}") from e
+        raise DicomProcessingError(f"Failed to read pixel array: {e}") from e
 
-    try:
-        # 如果是多通道或多帧，这里做一个最简单处理
-        if image.ndim == 3:
-            # 常见情况：取第一帧
-            image = image[0]
+    if image.ndim == 3:
+        image = image[0]
 
-        image_uint8 = normalize_to_uint8(image)
-        pil_image = Image.fromarray(image_uint8)
-
-        output = io.BytesIO()
-        pil_image.save(output, format="PNG")
-        return output.getvalue()
-    except Exception as e:
-        raise DicomProcessingError(f"Failed to convert DICOM to PNG: {e}") from e
+    image_uint8 = normalize_to_uint8(image)
+    pil_image = Image.fromarray(image_uint8).convert("RGB")
+    return pil_image
 
 
-def image_bytes_for_model(filename: str, file_bytes: bytes) -> Tuple[bytes, str]:
+def bytes_to_pil(filename: str, file_bytes: bytes) -> Image.Image:
     ext = validate_file(filename, file_bytes)
 
     if ext == ".dcm":
-        png_bytes = dicom_to_png_bytes(file_bytes)
-        return png_bytes, "image/png"
+        return dicom_to_pil(file_bytes)
 
-    if ext == ".png":
-        return file_bytes, "image/png"
-
-    if ext in {".jpg", ".jpeg"}:
-        return file_bytes, "image/jpeg"
-
-    raise FileValidationError("Unsupported image type after validation.")
-
-
-def get_genai_client() -> genai.Client:
     try:
-        validate_config()
-        return genai.Client(
-            vertexai=True,
-            project=PROJECT_ID,
-            location=REGION,
-        )
+        return Image.open(io.BytesIO(file_bytes)).convert("RGB")
     except Exception as e:
-        raise AIAnalysisError(f"Failed to initialize Gemini client: {e}") from e
+        raise FileValidationError(f"Failed to open image: {e}") from e
 
 
-def build_prompt() -> str:
-    return """
+def pil_to_png_bytes(image: Image.Image) -> bytes:
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def generate_fake_findings(image: Image.Image):
+    """
+    无训练 MVP：
+    按图像尺寸，在肺部大致区域生成一个 fake suspicious box。
+    后面你们可以把这里替换成真实检测模型输出。
+    """
+    width, height = image.size
+
+    box_w = int(width * 0.22)
+    box_h = int(height * 0.18)
+
+    x1 = int(width * 0.55)
+    y1 = int(height * 0.28)
+    x2 = x1 + box_w
+    y2 = y1 + box_h
+
+    x2 = min(x2, width - 1)
+    y2 = min(y2, height - 1)
+
+    findings = [
+        {
+            "label": "possible pulmonary opacity",
+            "confidence": 0.81,
+            "bbox": [x1, y1, x2, y2],
+        }
+    ]
+    return findings
+
+
+def get_rsna_findings_by_patient_id(patient_id: str):
+    rows = rsna_df[(rsna_df["patientId"] == patient_id) & (rsna_df["Target"] == 1)]
+
+    findings = []
+    for _, row in rows.iterrows():
+        x = int(row["x"])
+        y = int(row["y"])
+        w = int(row["width"])
+        h = int(row["height"])
+
+        findings.append({
+            "label": "pneumonia",
+            "confidence": 1.0,
+            "bbox": [x, y, x + w, y + h]
+        })
+
+    return findings
+
+
+def draw_findings_on_image(image: Image.Image, findings):
+    annotated = image.copy()
+    draw = ImageDraw.Draw(annotated)
+
+    for finding in findings:
+        x1, y1, x2, y2 = finding["bbox"]
+        label = finding["label"]
+        conf = finding["confidence"]
+
+        draw.rectangle([x1, y1, x2, y2], outline="red", width=4)
+        draw.text((x1, max(0, y1 - 20)), f"{label} ({conf:.2f})", fill="red")
+
+    return annotated
+
+
+def build_gemini_prompt(findings):
+    findings_json = json.dumps(findings, ensure_ascii=False)
+
+    return f"""
 You are a medical AI assistant helping radiologists with preliminary screening.
 
-Analyze the uploaded medical image and return ONLY valid JSON.
-Do not include markdown fences. Do not include extra explanation outside JSON.
+A computer vision system has identified these suspicious findings from a chest image:
 
-Required JSON schema:
-{
+{findings_json}
+
+Return ONLY valid JSON, with no markdown fences and no extra text.
+
+Required schema:
+{{
   "abnormality": "string",
   "risk_level": "low | medium | high",
   "confidence": 0.0,
   "explanation": "string",
   "requires_clinician_review": true,
   "disclaimer": "This AI output is for preliminary screening only and must be reviewed by a qualified clinician."
-}
+}}
 
 Rules:
-- If the image quality is insufficient, state that clearly in "explanation".
-- Never claim a definitive diagnosis.
-- Keep the explanation concise and clinically cautious.
+- Do not claim a definitive diagnosis.
+- Be cautious and clinically conservative.
+- The explanation should be short and clear.
 """.strip()
 
 
-def analyze_image_with_gemini(filename: str, file_bytes: bytes) -> dict:
-    prepared_bytes, mime_type = image_bytes_for_model(filename, file_bytes)
-    prompt = build_prompt()
-    client = get_genai_client()
+def generate_explanation_with_gemini(image: Image.Image, findings):
+    client = get_client()
+    prompt = build_gemini_prompt(findings)
+    image_bytes = pil_to_png_bytes(image)
+    encoded_image = base64.b64encode(image_bytes).decode("utf-8")
 
     try:
         response = client.models.generate_content(
@@ -176,14 +247,14 @@ def analyze_image_with_gemini(filename: str, file_bytes: bytes) -> dict:
                     "parts": [
                         {
                             "inline_data": {
-                                "mime_type": mime_type,
-                                "data": prepared_bytes
+                                "mime_type": "image/png",
+                                "data": encoded_image,
                             }
                         },
                         {
-                            "text": prompt
-                        }
-                    ]
+                            "text": prompt,
+                        },
+                    ],
                 }
             ],
         )
@@ -192,7 +263,7 @@ def analyze_image_with_gemini(filename: str, file_bytes: bytes) -> dict:
 
     text = getattr(response, "text", None)
     if not text:
-        raise AIAnalysisError("Gemini returned an empty response.")
+        raise AIAnalysisError("Gemini returned empty output.")
 
     try:
         return json.loads(text)
@@ -204,14 +275,11 @@ def analyze_image_with_gemini(filename: str, file_bytes: bytes) -> dict:
         except json.JSONDecodeError as e:
             raise AIAnalysisError(f"Gemini returned non-JSON output: {text}") from e
 
-app = Flask(__name__)
-CORS(app)
-
 
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({
-        "message": "MedVision API running",
+        "message": "MedVision MVP API running",
         "project_id": PROJECT_ID,
         "region": REGION,
         "model_name": MODEL_NAME,
@@ -220,45 +288,37 @@ def home():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({
-        "status": "ok"
-    })
+    return jsonify({"status": "ok"})
 
 
-@app.route("/config-check", methods=["GET"])
-def config_check():
-    try:
-        validate_config()
-        return jsonify({
-            "success": True,
-            "project_id": PROJECT_ID,
-            "region": REGION,
-            "model_name": MODEL_NAME
-        })
-    except AppConfigError as e:
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+@app.route("/annotated/<filename>", methods=["GET"])
+def get_annotated_file(filename):
+    return send_from_directory(ANNOTATED_DIR, filename)
 
 
 @app.route("/analyze-image", methods=["POST"])
-def analyze_image_api():
+def analyze_image():
     try:
         if "image" not in request.files:
-            raise FileValidationError("No file field named 'image' was found in the request.")
+            raise FileValidationError("No file field named 'image' found.")
 
         uploaded_file = request.files["image"]
 
-        if not uploaded_file or not uploaded_file.filename:
+        if not uploaded_file.filename:
             raise FileValidationError("No file selected.")
 
         file_bytes = uploaded_file.read()
+        original_image = bytes_to_pil(uploaded_file.filename, file_bytes)
 
-        result = analyze_image_with_gemini(
-            filename=uploaded_file.filename,
-            file_bytes=file_bytes
-        )
+        findings = generate_fake_findings(original_image)
+        annotated_image = draw_findings_on_image(original_image, findings)
+
+        file_id = uuid.uuid4().hex
+        annotated_filename = f"{file_id}.png"
+        annotated_path = ANNOTATED_DIR / annotated_filename
+        annotated_image.save(annotated_path, format="PNG")
+
+        gemini_result = generate_explanation_with_gemini(original_image, findings)
 
         return jsonify({
             "success": True,
@@ -266,39 +326,91 @@ def analyze_image_api():
             "region": REGION,
             "model_name": MODEL_NAME,
             "filename": uploaded_file.filename,
-            "result": result
+            "annotated_image_url": f"http://127.0.0.1:8080/annotated/{annotated_filename}",
+            "findings": findings,
+            "result": gemini_result,
         }), 200
 
     except FileValidationError as e:
         return jsonify({
             "success": False,
             "error_type": "FileValidationError",
-            "error": str(e)
+            "error": str(e),
         }), 400
 
     except DicomProcessingError as e:
         return jsonify({
             "success": False,
             "error_type": "DicomProcessingError",
-            "error": str(e)
+            "error": str(e),
         }), 400
 
     except AIAnalysisError as e:
         return jsonify({
             "success": False,
             "error_type": "AIAnalysisError",
-            "error": str(e)
+            "error": str(e),
         }), 500
 
     except Exception as e:
         return jsonify({
             "success": False,
             "error_type": "UnhandledException",
+            "error": str(e),
+        }), 500
+
+
+@app.route("/demo-rsna/<patient_id>", methods=["GET"])
+def demo_rsna(patient_id):
+    print("=== demo_rsna HIT ===")
+    print("patient_id:", repr(patient_id))
+
+    try:
+        dicom_path = os.path.join(RSNA_TRAIN_IMAGE_DIR, f"{patient_id}.dcm")
+        print("dicom_path:", dicom_path)
+        print("exists:", os.path.exists(dicom_path))
+
+        with open(dicom_path, "rb") as f:
+            dicom_bytes = f.read()
+
+        image = bytes_to_pil(f"{patient_id}.dcm", dicom_bytes)
+        findings = get_rsna_findings_by_patient_id(patient_id)
+        print("findings count:", len(findings))
+        print("findings:", findings)
+
+        if not findings:
+            return jsonify({
+                "success": False,
+                "error": f"No positive findings found for patient_id={patient_id}"
+            }), 404
+
+        annotated_image = draw_findings_on_image(image, findings)
+
+        file_id = uuid.uuid4().hex
+        annotated_filename = f"{file_id}.png"
+        annotated_path = ANNOTATED_DIR / annotated_filename
+        annotated_image.save(annotated_path, format="PNG")
+
+        gemini_result = generate_explanation_with_gemini(image, findings)
+
+        return jsonify({
+            "success": True,
+            "patient_id": patient_id,
+            "annotated_image_url": f"http://127.0.0.1:8080/annotated/{annotated_filename}",
+            "findings": findings,
+            "result": gemini_result
+        }), 200
+
+    except Exception as e:
+        print("EXCEPTION:", repr(e))
+        return jsonify({
+            "success": False,
             "error": str(e)
         }), 500
 
 
 if __name__ == "__main__":
+    print(app.url_map)
     print(f"PROJECT_ID = {PROJECT_ID}")
     print(f"REGION = {REGION}")
     print(f"MODEL_NAME = {MODEL_NAME}")
