@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+
+<body>
+
+<h2>MedVision AI Screening</h2>
+
+<input type="file" id="imageInput">
+<button onclick="upload()">Analyze</button>
+
+<pre id="result"></pre>
+
+<script>
+
+async function upload() {
+
+    const file = document.getElementById("imageInput").files[0]
+
+    const formData = new FormData()
+    formData.append("image", file)
+
+    const res = await fetch("http://127.0.0.1:8080/analyze-image", {
+        method: "POST",
+        body: formData
+    })
+
+    const data = await res.json()
+
+    document.getElementById("result").innerText =
+        JSON.stringify(data, null, 2)
+}
+
+</script>
+
+</body>
+</html>
