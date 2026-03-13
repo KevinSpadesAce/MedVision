@@ -1,0 +1,6 @@
+path: E:/Documents/GitHub/MedVision/rsna_yolo
+train: images/train
+val: images/val
+
+names:
+  0: pneumonia

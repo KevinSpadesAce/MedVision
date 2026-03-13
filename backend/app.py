@@ -13,6 +13,7 @@ from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from google import genai
 import pandas as pd
+from ultralytics import YOLO
 
 load_dotenv()
 
@@ -22,6 +23,13 @@ MODEL_NAME = os.getenv("MODEL_NAME", "gemini-3-flash-preview")
 RSNA_LABEL_CSV = r"E:/Documents/GitHub/MedVision/data/stage_2_train_labels.csv"
 RSNA_TRAIN_IMAGE_DIR = r"E:/Documents/GitHub/MedVision/data/stage_2_train_images"
 rsna_df = pd.read_csv(RSNA_LABEL_CSV)
+
+DETECTION_MODEL_PATH = os.getenv(
+    "DETECTION_MODEL_PATH",
+    r"E:/Documents/GitHub/MedVision/runs/detect/train2/weights/best.pt"
+)
+DETECTION_CONF = float(os.getenv("DETECTION_CONF", "0.05"))
+det_model = YOLO(DETECTION_MODEL_PATH)
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
@@ -140,32 +148,41 @@ def pil_to_png_bytes(image: Image.Image) -> bytes:
     return buffer.getvalue()
 
 
-def generate_fake_findings(image: Image.Image):
-    """
-    无训练 MVP：
-    按图像尺寸，在肺部大致区域生成一个 fake suspicious box。
-    后面你们可以把这里替换成真实检测模型输出。
-    """
-    width, height = image.size
+def run_yolo_inference(image: Image.Image):
+    image_np = np.array(image)
 
-    box_w = int(width * 0.22)
-    box_h = int(height * 0.18)
+    results = det_model.predict(
+        source=image_np,
+        conf=DETECTION_CONF,
+        verbose=False
+    )
 
-    x1 = int(width * 0.55)
-    y1 = int(height * 0.28)
-    x2 = x1 + box_w
-    y2 = y1 + box_h
+    findings = []
 
-    x2 = min(x2, width - 1)
-    y2 = min(y2, height - 1)
+    if not results:
+        return findings
 
-    findings = [
-        {
-            "label": "possible pulmonary opacity",
-            "confidence": 0.81,
-            "bbox": [x1, y1, x2, y2],
-        }
-    ]
+    result = results[0]
+
+    if result.boxes is None or len(result.boxes) == 0:
+        return findings
+
+    names = result.names
+
+    for box in result.boxes:
+        xyxy = box.xyxy[0].tolist()
+        conf = float(box.conf[0].item())
+        cls_id = int(box.cls[0].item())
+        label = names.get(cls_id, str(cls_id))
+
+        x1, y1, x2, y2 = [int(v) for v in xyxy]
+
+        findings.append({
+            "label": label,
+            "confidence": round(conf, 4),
+            "bbox": [x1, y1, x2, y2]
+        })
+
     return findings
 
 
@@ -209,9 +226,11 @@ def build_gemini_prompt(findings):
     return f"""
 You are a medical AI assistant helping radiologists with preliminary screening.
 
-A computer vision system has identified these suspicious findings from a chest image:
+A trained object detection model has analyzed a chest X-ray and produced the following findings:
 
 {findings_json}
+
+Your task is to summarize these model findings cautiously for clinician review.
 
 Return ONLY valid JSON, with no markdown fences and no extra text.
 
@@ -226,9 +245,11 @@ Required schema:
 }}
 
 Rules:
+- Base your answer on the detection findings and the image only.
 - Do not claim a definitive diagnosis.
+- Do not invent extra findings that are not supported by the detections.
 - Be cautious and clinically conservative.
-- The explanation should be short and clear.
+- Keep the explanation short and clear.
 """.strip()
 
 
@@ -310,7 +331,7 @@ def analyze_image():
         file_bytes = uploaded_file.read()
         original_image = bytes_to_pil(uploaded_file.filename, file_bytes)
 
-        findings = generate_fake_findings(original_image)
+        findings = run_yolo_inference(original_image)
         annotated_image = draw_findings_on_image(original_image, findings)
 
         file_id = uuid.uuid4().hex
@@ -318,7 +339,17 @@ def analyze_image():
         annotated_path = ANNOTATED_DIR / annotated_filename
         annotated_image.save(annotated_path, format="PNG")
 
-        gemini_result = generate_explanation_with_gemini(original_image, findings)
+        if findings:
+            gemini_result = generate_explanation_with_gemini(original_image, findings)
+        else:
+            gemini_result = {
+                "abnormality": "No pneumonia detected by the current screening model",
+                "risk_level": "low",
+                "confidence": 0.0,
+                "explanation": "The current detection model did not identify any pneumonia regions above the configured confidence threshold. This does not rule out disease and still requires clinician review.",
+                "requires_clinician_review": True,
+                "disclaimer": "This AI output is for preliminary screening only and must be reviewed by a qualified clinician."
+            }
 
         return jsonify({
             "success": True,
