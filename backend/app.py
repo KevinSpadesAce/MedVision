@@ -14,6 +14,7 @@ from flask_cors import CORS
 from google import genai
 import pandas as pd
 from ultralytics import YOLO
+from security_controls import RateLimitError, ResourceBusyError, FileSecurityError, get_client_identifier, check_rate_limit, check_file_size, check_image_dimensions, run_with_inference_limit
 
 load_dotenv()
 
@@ -320,6 +321,9 @@ def get_annotated_file(filename):
 @app.route("/analyze-image", methods=["POST"])
 def analyze_image():
     try:
+        client_id = get_client_identifier(request)
+        check_rate_limit(client_id)
+
         if "image" not in request.files:
             raise FileValidationError("No file field named 'image' found.")
 
@@ -329,9 +333,12 @@ def analyze_image():
             raise FileValidationError("No file selected.")
 
         file_bytes = uploaded_file.read()
-        original_image = bytes_to_pil(uploaded_file.filename, file_bytes)
+        check_file_size(file_bytes)
 
-        findings = run_yolo_inference(original_image)
+        original_image = bytes_to_pil(uploaded_file.filename, file_bytes)
+        check_image_dimensions(original_image)
+
+        findings = run_with_inference_limit(run_yolo_inference, original_image)
         annotated_image = draw_findings_on_image(original_image, findings)
 
         file_id = uuid.uuid4().hex
@@ -361,6 +368,27 @@ def analyze_image():
             "findings": findings,
             "result": gemini_result,
         }), 200
+
+    except RateLimitError as e:
+        return jsonify({
+            "success": False,
+            "error_type": "RateLimitError",
+            "error": str(e),
+        }), 429
+
+    except FileSecurityError as e:
+        return jsonify({
+            "success": False,
+            "error_type": "FileSecurityError",
+            "error": str(e),
+        }), 400
+
+    except ResourceBusyError as e:
+        return jsonify({
+            "success": False,
+            "error_type": "ResourceBusyError",
+            "error": str(e),
+        }), 503
 
     except FileValidationError as e:
         return jsonify({
